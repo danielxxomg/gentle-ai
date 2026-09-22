@@ -83,6 +83,7 @@ func checkSingleTool(ctx context.Context, tool ToolInfo, currentBuildVersion str
 	var pluginRegistered bool
 	var release githubRelease
 	var mainCommit githubCommit
+	var remoteGoModule string
 	var fetchErr error
 
 	wg.Add(2)
@@ -99,7 +100,13 @@ func checkSingleTool(ctx context.Context, tool ToolInfo, currentBuildVersion str
 	go func() {
 		defer wg.Done()
 		if betaMainHead {
-			mainCommit, fetchErr = fetchMainCommit(ctx, tool.Owner, tool.Repo)
+			if mainCommit, fetchErr = fetchMainCommit(ctx, tool.Owner, tool.Repo); fetchErr == nil {
+				if sha := strings.TrimSpace(mainCommit.SHA); sha == "" {
+					fetchErr = fmt.Errorf("empty commit SHA for %s/%s main", tool.Owner, tool.Repo)
+				} else {
+					remoteGoModule, fetchErr = fetchRemoteGoModule(ctx, tool.Owner, tool.Repo, sha)
+				}
+			}
 			return
 		}
 		release, fetchErr = fetchLatestReleaseForTool(ctx, tool)
@@ -118,11 +125,15 @@ func checkSingleTool(ctx context.Context, tool ToolInfo, currentBuildVersion str
 	}
 
 	if betaMainHead {
-		return applyBetaMainHeadStatus(result, localVersion, mainCommit)
+		return applyBetaMainHeadStatus(result, localVersion, mainCommit, remoteGoModule)
 	}
 
 	result.LatestVersion = normalizeVersion(release.TagName)
 	result.ReleaseURL = release.HTMLURL
+	if isGentleAIRepo(tool) {
+		result.GoModulePath = GentleAIModulePath(tool, result.LatestVersion)
+		result.Tool.GoImportPath = GentleAIImportPath(tool, result.LatestVersion)
+	}
 
 	// Determine status based on local version.
 	if localVersion == "" {
@@ -184,7 +195,7 @@ func isBetaUpdateChannel() bool {
 	}
 }
 
-func applyBetaMainHeadStatus(result UpdateResult, localVersion string, commit githubCommit) UpdateResult {
+func applyBetaMainHeadStatus(result UpdateResult, localVersion string, commit githubCommit, modulePath string) UpdateResult {
 	remoteSHA := strings.TrimSpace(commit.SHA)
 	shortRemote := shortCommit(remoteSHA)
 	if shortRemote == "" {
@@ -194,11 +205,16 @@ func applyBetaMainHeadStatus(result UpdateResult, localVersion string, commit gi
 
 	result.LatestVersion = "main@" + shortRemote
 	result.ReleaseURL = strings.TrimSpace(commit.HTMLURL)
-	// Derive the instruction from the advertised target: the only installer
-	// that delivers main@<sha> is `go install ...@main`. The per-OS stable
-	// hint would silently replace this beta build with the latest stable
-	// release (issue #2323).
-	result.UpdateHint = GentleAISourceInstallCommand(result.LatestVersion)
+
+	if result.GoModulePath = strings.TrimSpace(modulePath); result.GoModulePath == "" {
+		result.Status, result.Err = CheckFailed, fmt.Errorf("missing Go module path for %s/%s", result.Tool.Owner, result.Tool.Repo)
+		return result
+	}
+	result.Tool.GoImportPath = GentleAIImportPath(result.Tool, result.GoModulePath)
+	if result.UpdateHint, result.Err = GentleAISourceInstallCommand(result.LatestVersion, result.GoModulePath); result.Err != nil {
+		result.Status = CheckFailed
+		return result
+	}
 
 	if strings.TrimSpace(localVersion) == "" {
 		result.Status = VersionUnknown

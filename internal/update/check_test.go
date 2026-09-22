@@ -335,6 +335,8 @@ func TestCheckSingleToolGentleAIBetaComparesMainHead(t *testing.T) {
 			json.NewEncoder(w).Encode(githubRelease{TagName: "v1.40.3", HTMLURL: "https://github.com/Gentleman-Programming/gentle-ai/releases/tag/v1.40.3"})
 		case "/repos/Gentleman-Programming/gentle-ai/commits/main":
 			json.NewEncoder(w).Encode(githubCommit{SHA: "972997650b51abcdef0123456789abcdef012345", HTMLURL: "https://github.com/Gentleman-Programming/gentle-ai/commit/972997650b51abcdef0123456789abcdef012345"})
+		case "/repos/Gentleman-Programming/gentle-ai/contents/go.mod":
+			fmt.Fprint(w, "module github.com/gentleman-programming/gentle-ai/v3\n")
 		default:
 			// Stray or misdirected request: reply 404 and let the test's
 			// main-goroutine assertions decide (see simulateStrayForeignRequest).
@@ -371,6 +373,8 @@ func TestCheckSingleToolGentleAIPseudoVersionComparesMainHeadWithoutChannel(t *t
 			json.NewEncoder(w).Encode(githubRelease{TagName: "v1.40.3", HTMLURL: "https://github.com/Gentleman-Programming/gentle-ai/releases/tag/v1.40.3"})
 		case "/repos/Gentleman-Programming/gentle-ai/commits/main":
 			json.NewEncoder(w).Encode(githubCommit{SHA: "b6872c69e3e4abcdef0123456789abcdef012345", HTMLURL: "https://github.com/Gentleman-Programming/gentle-ai/commit/b6872c69e3e4abcdef0123456789abcdef012345"})
+		case "/repos/Gentleman-Programming/gentle-ai/contents/go.mod":
+			fmt.Fprint(w, "module github.com/gentleman-programming/gentle-ai/v3\n")
 		default:
 			// Stray or misdirected request: reply 404 and let the test's
 			// main-goroutine assertions decide (see simulateStrayForeignRequest).
@@ -517,6 +521,8 @@ func TestCheckSingleToolGentleAIBetaAcceptsLocalCommitPrefix(t *testing.T) {
 			json.NewEncoder(w).Encode(githubRelease{TagName: "v1.40.3", HTMLURL: "https://github.com/Gentleman-Programming/gentle-ai/releases/tag/v1.40.3"})
 		case "/repos/Gentleman-Programming/gentle-ai/commits/main":
 			json.NewEncoder(w).Encode(githubCommit{SHA: "6eff4a1ba110abcdef0123456789abcdef012345", HTMLURL: "https://github.com/Gentleman-Programming/gentle-ai/commit/6eff4a1ba110abcdef0123456789abcdef012345"})
+		case "/repos/Gentleman-Programming/gentle-ai/contents/go.mod":
+			fmt.Fprint(w, "module github.com/gentleman-programming/gentle-ai/v3\n")
 		default:
 			// Stray or misdirected request: reply 404 and let the test's
 			// main-goroutine assertions decide (see simulateStrayForeignRequest).
@@ -608,6 +614,8 @@ func TestCheckSingleToolGentleAIBetaHintNamesAdvertisedTarget(t *testing.T) {
 			json.NewEncoder(w).Encode(githubRelease{TagName: "v1.40.3", HTMLURL: "https://github.com/Gentleman-Programming/gentle-ai/releases/tag/v1.40.3"})
 		case "/repos/Gentleman-Programming/gentle-ai/commits/main":
 			json.NewEncoder(w).Encode(githubCommit{SHA: "972997650b51abcdef0123456789abcdef012345", HTMLURL: "https://github.com/Gentleman-Programming/gentle-ai/commit/972997650b51abcdef0123456789abcdef012345"})
+		case "/repos/Gentleman-Programming/gentle-ai/contents/go.mod":
+			fmt.Fprint(w, "module github.com/gentleman-programming/gentle-ai/v3\n")
 		default:
 			// Stray or misdirected request: reply 404 and let the test's
 			// main-goroutine assertions decide (see simulateStrayForeignRequest).
@@ -627,12 +635,9 @@ func TestCheckSingleToolGentleAIBetaHintNamesAdvertisedTarget(t *testing.T) {
 	if result.LatestVersion != "main@972997650b51" {
 		t.Fatalf("LatestVersion = %q, want main@972997650b51", result.LatestVersion)
 	}
-	derived := GentleAISourceInstallCommand(result.LatestVersion)
-	if result.UpdateHint != derived {
-		t.Fatalf("UpdateHint = %q, want the instruction derived from the advertised target: %q", result.UpdateHint, derived)
-	}
-	if result.UpdateHint != "go install github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai@main" {
-		t.Fatalf("UpdateHint = %q, want the go install @main command", result.UpdateHint)
+	derived, err := GentleAISourceInstallCommand(result.LatestVersion, result.GoModulePath)
+	if err != nil || result.UpdateHint != derived || result.UpdateHint != "go install github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai@972997650b51" {
+		t.Fatalf("UpdateHint = %q, derived = %q, err = %v", result.UpdateHint, derived, err)
 	}
 }
 
@@ -654,6 +659,8 @@ func TestCheckSingleToolGentleAIBetaNewerLocalPseudoVersionIsNotOffered(t *testi
 		case "/repos/Gentleman-Programming/gentle-ai/commits/main":
 			// Real API shape: the commit date rides inside commit.committer.date.
 			fmt.Fprint(w, `{"sha":"aaaabbbbcccc0123456789abcdef0123456789ab","html_url":"https://github.com/Gentleman-Programming/gentle-ai/commit/aaaabbbbcccc0123456789abcdef0123456789ab","commit":{"committer":{"date":"2026-07-25T10:00:00Z"}}}`)
+		case "/repos/Gentleman-Programming/gentle-ai/contents/go.mod":
+			fmt.Fprint(w, "module github.com/gentleman-programming/gentle-ai/v3\n")
 		default:
 			// Stray or misdirected request: reply 404 and let the test's
 			// main-goroutine assertions decide (see simulateStrayForeignRequest).
@@ -688,6 +695,8 @@ func TestCheckSingleToolGentleAIBetaOlderLocalPseudoVersionStillOffered(t *testi
 			json.NewEncoder(w).Encode(githubRelease{TagName: "v1.40.3", HTMLURL: "https://github.com/Gentleman-Programming/gentle-ai/releases/tag/v1.40.3"})
 		case "/repos/Gentleman-Programming/gentle-ai/commits/main":
 			fmt.Fprint(w, `{"sha":"aaaabbbbcccc0123456789abcdef0123456789ab","html_url":"https://github.com/Gentleman-Programming/gentle-ai/commit/aaaabbbbcccc0123456789abcdef0123456789ab","commit":{"committer":{"date":"2026-08-01T00:00:00Z"}}}`)
+		case "/repos/Gentleman-Programming/gentle-ai/contents/go.mod":
+			fmt.Fprint(w, "module github.com/gentleman-programming/gentle-ai/v3\n")
 		default:
 			// Stray or misdirected request: reply 404 and let the test's
 			// main-goroutine assertions decide (see simulateStrayForeignRequest).
@@ -2114,4 +2123,106 @@ func mockCmd(name string, args ...string) *exec.Cmd {
 		}
 	}
 	return exec.Command(name, args...)
+}
+
+func TestCheckSingleToolGentleAIBetaDynamicModule(t *testing.T) {
+	t.Setenv("GENTLE_AI_CHANNEL", "beta")
+	origClient := httpClient
+	t.Cleanup(func() { httpClient = origClient })
+
+	checkWithModHandler := func(modHandler http.HandlerFunc) (UpdateResult, *http.Request) {
+		var lastReq *http.Request
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/repos/Gentleman-Programming/gentle-ai/contents/go.mod" {
+				lastReq = r.Clone(context.Background())
+				modHandler(w, r)
+				return
+			}
+			fmt.Fprint(w, `{"tag_name":"v3.0.0","sha":"972997650b51abcdef0123456789abcdef012345"}`)
+		}))
+		defer server.Close()
+		httpClient = server.Client()
+		httpClient.Transport = &testTransport{server: server}
+		return checkSingleTool(context.Background(), Tools[0], "3.0.0-0.20260614151827-6eff4a1ba110", system.PlatformProfile{}), lastReq
+	}
+
+	t.Run("transitions to v4 dynamic module", func(t *testing.T) {
+		res, req := checkWithModHandler(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, "module github.com/gentleman-programming/gentle-ai/v4\n")
+		})
+		if res.Status != UpdateAvailable || res.LatestVersion != "main@972997650b51" || res.GoModulePath != "github.com/gentleman-programming/gentle-ai/v4" ||
+			res.Tool.GoImportPath != "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai" || res.UpdateHint != "go install github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@972997650b51" ||
+			req.URL.Query().Get("ref") != "972997650b51abcdef0123456789abcdef012345" || req.Header.Get("Accept") != "application/vnd.github.raw" {
+			t.Fatalf("unexpected result: %+v, req: %v", res, req)
+		}
+	})
+
+	t.Run("fails closed on go.mod error", func(t *testing.T) {
+		res, _ := checkWithModHandler(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "rate limit", http.StatusForbidden)
+		})
+		if res.Status != CheckFailed || res.Err == nil {
+			t.Fatalf("expected CheckFailed with error, got status=%q err=%v", res.Status, res.Err)
+		}
+	})
+}
+
+func TestGentleAISourceInstallCommandModuleDerivation(t *testing.T) {
+	for _, tt := range []struct {
+		name, version, module, want string
+		wantErr                     bool
+	}{
+		{name: "empty defaults to latest v3", version: "", want: "go install github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai@latest"},
+		{name: "v3 release", version: "v3.5.0", want: "go install github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai@v3.5.0"},
+		{name: "v4 cross-major derives v4", version: "v4.0.0", want: "go install github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@v4.0.0"},
+		{name: "beta main installs @SHA", version: "main@abc1234", module: "github.com/gentleman-programming/gentle-ai/v4", want: "go install github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@abc1234"},
+		{name: "beta main strips cmd suffix", version: "main@abc1234", module: "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai", want: "go install github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@abc1234"},
+		{name: "beta main without module fails", version: "main@abc1234", wantErr: true},
+		{name: "bare main fails without SHA", version: "main", wantErr: true},
+		{name: "beta main whitespace SHA fails", version: "main@  ", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, err := GentleAISourceInstallCommand(tt.version, tt.module); (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("GentleAISourceInstallCommand(%q) = (%q, %v), want (%q, wantErr %v)", tt.version, got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGentleAIModulePath(t *testing.T) {
+	tool := ToolInfo{Owner: "Gentleman-Programming", Repo: "gentle-ai"}
+	for _, tt := range []struct{ target, want string }{
+		{"", "github.com/gentleman-programming/gentle-ai/v3"},
+		{"v3.5.0", "github.com/gentleman-programming/gentle-ai/v3"},
+		{"v4.0.0", "github.com/gentleman-programming/gentle-ai/v4"},
+		{"v5.0.0-rc.1", "github.com/gentleman-programming/gentle-ai/v5"},
+		{"github.com/gentleman-programming/gentle-ai/v4", "github.com/gentleman-programming/gentle-ai/v4"},
+		{"github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai", "github.com/gentleman-programming/gentle-ai/v4"},
+		{"github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@972997650b51", "github.com/gentleman-programming/gentle-ai/v4"},
+	} {
+		if got := GentleAIModulePath(tool, tt.target); got != tt.want {
+			t.Errorf("GentleAIModulePath(%q) = %q, want %q", tt.target, got, tt.want)
+		}
+	}
+}
+
+func TestParseGoModule(t *testing.T) {
+	for _, tt := range []struct {
+		name, content, want string
+		wantErr             bool
+	}{
+		{name: "valid v4 module", content: "module github.com/gentleman-programming/gentle-ai/v4\n\ngo 1.26\n", want: "github.com/gentleman-programming/gentle-ai/v4"},
+		{name: "module with comments and whitespace", content: "// header\nmodule github.com/gentleman-programming/gentle-ai/v5 // inline\n", want: "github.com/gentleman-programming/gentle-ai/v5"},
+		{name: "empty content", wantErr: true},
+		{name: "no module directive", content: "go 1.25\nrequire foo v1.0.0\n", wantErr: true},
+		{name: "foreign repository prefix", content: "module github.com/other-org/gentle-ai/v4\n", wantErr: true},
+		{name: "prefix confusion attacker repo", content: "module github.com/gentleman-programming/gentle-ai-attacker/v4\n", wantErr: true},
+		{name: "invalid module syntax", content: "module @invalid-path\n", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, err := parseGoModule([]byte(tt.content)); (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("parseGoModule() = (%q, %v), want (%q, wantErr %v)", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
 }

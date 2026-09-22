@@ -13,6 +13,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 )
 
 // httpClient is the HTTP client used for GitHub API calls.
@@ -236,4 +239,51 @@ func checkGitHubResponse(resp *http.Response, owner, repo string) error {
 	default:
 		return fmt.Errorf("github API returned HTTP %d for %s/%s", resp.StatusCode, owner, repo)
 	}
+}
+
+// fetchRemoteGoModule queries raw go.mod from the repository at ref and extracts
+// its declared module path using golang.org/x/mod/modfile.
+func fetchRemoteGoModule(ctx context.Context, owner, repo, ref string) (string, error) {
+	if ref = strings.TrimSpace(ref); ref == "" {
+		ref = "main"
+	}
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/go.mod?ref=%s", owner, repo, url.QueryEscape(ref))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("build github request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github.raw")
+	req.Header.Set("User-Agent", "gentle-ai-update-check")
+	if token := resolveGitHubToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("github API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if err := checkGitHubResponse(resp, owner, repo); err != nil {
+		return "", err
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("read go.mod body: %w", err)
+	}
+	return parseGoModule(body)
+}
+
+func parseGoModule(body []byte) (string, error) {
+	modPath := modfile.ModulePath(body)
+	if modPath == "" {
+		return "", fmt.Errorf("no module directive found in go.mod")
+	}
+	if err := module.CheckPath(modPath); err != nil {
+		return "", fmt.Errorf("invalid module path %q: %w", modPath, err)
+	}
+	lower := strings.ToLower(modPath)
+	const expected = "github.com/gentleman-programming/gentle-ai"
+	if lower != expected && !strings.HasPrefix(lower, expected+"/") {
+		return "", fmt.Errorf("unexpected module path %q", modPath)
+	}
+	return modPath, nil
 }

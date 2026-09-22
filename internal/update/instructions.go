@@ -2,6 +2,7 @@ package update
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gentleman-programming/gentle-ai/v3/internal/system"
@@ -9,17 +10,68 @@ import (
 
 const WindowsDistributionHoldMessage = "Windows binary distribution and Scoop are temporarily unavailable until publicly trusted Authenticode signing is enforced."
 
+// GentleAIModulePath returns the Go module path for gentle-ai. If versionOrMajor
+// is provided, it derives the module suffix for the corresponding major version
+// (unsuffixed for v0/v1, /vN for N >= 2), accepts an explicit module or import
+// path, or falls back to the default v3 module path.
+func GentleAIModulePath(tool ToolInfo, versionOrMajor ...string) string {
+	repo := strings.ToLower(fmt.Sprintf("github.com/%s/%s", strings.TrimSpace(tool.Owner), strings.TrimSpace(tool.Repo)))
+	if repo == "github.com//" {
+		repo = "github.com/gentleman-programming/gentle-ai"
+	}
+	if len(versionOrMajor) > 0 && strings.TrimSpace(versionOrMajor[0]) != "" {
+		target := strings.TrimSpace(versionOrMajor[0])
+		if i := strings.Index(target, "@"); i >= 0 {
+			target = target[:i]
+		}
+		if strings.Contains(target, "/") {
+			return strings.TrimSuffix(strings.TrimSuffix(target, "/cmd/gentle-ai"), "/cmd")
+		}
+		if major := extractMajorVersion(target); major >= 4 {
+			return fmt.Sprintf("%s/v%d", repo, major)
+		}
+	}
+	return repo + "/v3"
+}
+
+// GentleAIImportPath returns the Go import path for the gentle-ai binary.
+func GentleAIImportPath(tool ToolInfo, versionOrMajor ...string) string {
+	return GentleAIModulePath(tool, versionOrMajor...) + "/cmd/gentle-ai"
+}
+
+func extractMajorVersion(version string) int {
+	v := strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if i := strings.IndexAny(v, ".-"); i >= 0 {
+		v = v[:i]
+	}
+	n, _ := strconv.Atoi(v)
+	return n
+}
+
 // GentleAISourceInstallCommand returns the safe source-install fallback for an
 // exact release, beta main build, or the latest release when version is empty.
-func GentleAISourceInstallCommand(version string) string {
+// In beta, modulePath is strictly required and the verified commit SHA is pinned
+// in the install target (@<SHA>).
+func GentleAISourceInstallCommand(version string, modulePath ...string) (string, error) {
+	version, module := strings.TrimSpace(version), ""
+	if len(modulePath) > 0 {
+		module = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(modulePath[0]), "/cmd/gentle-ai"), "/cmd")
+	}
+	if strings.HasPrefix(version, "main@") || version == "main" {
+		sha := strings.TrimSpace(strings.TrimPrefix(version, "main@"))
+		if module == "" || sha == "" || sha == "main" {
+			return "", fmt.Errorf("cannot derive source install command for beta build %q: missing Go module path or commit SHA", version)
+		}
+		return fmt.Sprintf("go install %s/cmd/gentle-ai@%s", module, sha), nil
+	}
 	target := "latest"
-	version = strings.TrimSpace(version)
-	if strings.HasPrefix(version, "main@") {
-		target = "main"
-	} else if version != "" {
+	if version != "" && version != "latest" {
 		target = "v" + strings.TrimPrefix(version, "v")
 	}
-	return "go install github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai@" + target
+	if module == "" {
+		module = GentleAIModulePath(ToolInfo{}, version)
+	}
+	return fmt.Sprintf("go install %s/cmd/gentle-ai@%s", module, target), nil
 }
 
 // updateHint returns a platform-specific instruction string for updating the given tool.
@@ -68,7 +120,8 @@ func gentleAIHint(profile system.PlatformProfile) string {
 	case "darwin":
 		return "gentle-ai upgrade (downloads pre-built binary)"
 	case "windows":
-		return WindowsDistributionHoldMessage + " Install/update from source with Go 1.25.10+: " + GentleAISourceInstallCommand("")
+		cmd, _ := GentleAISourceInstallCommand("")
+		return WindowsDistributionHoldMessage + " Install/update from source with Go 1.25.10+: " + cmd
 	default:
 		return ""
 	}

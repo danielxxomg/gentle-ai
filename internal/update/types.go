@@ -66,5 +66,6 @@ type UpdateResult struct {
 	Status           UpdateStatus
 	ReleaseURL       string
 	UpdateHint       string
+	GoModulePath     string
 	Err              error
 }

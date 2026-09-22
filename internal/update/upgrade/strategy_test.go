@@ -128,6 +128,7 @@ func TestRunStrategy_BetaGentleAISelfUpgradeUsesGoInstallMain(t *testing.T) {
 			InstallMethod: update.InstallBinary,
 		},
 		LatestVersion: "main@972997650b51",
+		GoModulePath:  "github.com/gentleman-programming/gentle-ai/v3",
 		Status:        update.UpdateAvailable,
 	}
 	profile := system.PlatformProfile{OS: "linux", PackageManager: "apt", Supported: true}
@@ -140,7 +141,7 @@ func TestRunStrategy_BetaGentleAISelfUpgradeUsesGoInstallMain(t *testing.T) {
 	if gotName != "go" {
 		t.Fatalf("exec name = %q, want %q", gotName, "go")
 	}
-	wantArgs := []string{"install", "github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai@main"}
+	wantArgs := []string{"install", "github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai@972997650b51"}
 	if len(gotArgs) != len(wantArgs) || gotArgs[0] != wantArgs[0] || gotArgs[1] != wantArgs[1] {
 		t.Fatalf("exec args = %v, want %v", gotArgs, wantArgs)
 	}
@@ -162,6 +163,65 @@ func envContains(env []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestRunStrategy_DynamicModuleUpgradeScenarios(t *testing.T) {
+	origExec, origLook := execCommand, lookPathFn
+	t.Cleanup(func() { execCommand, lookPathFn = origExec, origLook })
+
+	gobin := t.TempDir()
+	lookPathFn = func(string) (string, error) { return writeFakeBinary(t, gobin, "gentle-ai.exe"), nil }
+
+	var gotArgs []string
+	var gotCmd *exec.Cmd
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "go" && len(args) == 2 && args[0] == "env" {
+			return mockCmd("echo", gobin)
+		}
+		gotArgs, gotCmd = args, mockCmd("true")
+		return gotCmd
+	}
+
+	tool := update.ToolInfo{
+		Name: "gentle-ai", Owner: "Gentleman-Programming", Repo: "gentle-ai",
+		InstallMethod: update.InstallBinary,
+		GoImportPath:  "github.com/gentleman-programming/gentle-ai/v3/cmd/gentle-ai",
+	}
+	assertRun := func(r update.UpdateResult, p system.PlatformProfile, wantTarget string) {
+		if _, err := runStrategy(context.Background(), r, p); err != nil || len(gotArgs) != 2 || gotArgs[0] != "install" || gotArgs[1] != wantTarget {
+			t.Fatalf("runStrategy(%+v) err=%v, args=%v, want [install %s]", r, err, gotArgs, wantTarget)
+		}
+	}
+	winProfile := system.PlatformProfile{OS: "windows", PackageManager: "winget", GoAvailable: true, Supported: true}
+	v4Result := update.UpdateResult{Tool: tool, LatestVersion: "main@972997650b51", GoModulePath: "github.com/gentleman-programming/gentle-ai/v4"}
+
+	t.Run("linux beta v4 module installs @SHA with private env", func(t *testing.T) {
+		assertRun(v4Result, system.PlatformProfile{OS: "linux"}, "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@972997650b51")
+		for _, key := range []string{"GONOSUMDB", "GOPRIVATE", "GONOPROXY"} {
+			if !slicesContain(gotCmd.Env, key+"="+v4Result.GoModulePath) {
+				t.Fatalf("missing env for %s", key)
+			}
+		}
+	})
+
+	t.Run("beta fails closed on empty module or invalid SHA", func(t *testing.T) {
+		for _, r := range []update.UpdateResult{
+			{Tool: tool, LatestVersion: "main@972997650b51"},
+			{Tool: tool, LatestVersion: "main@   ", GoModulePath: v4Result.GoModulePath},
+		} {
+			if _, err := runStrategy(context.Background(), r, system.PlatformProfile{OS: "linux"}); err == nil {
+				t.Fatalf("expected beta upgrade error for %+v", r)
+			}
+		}
+	})
+
+	t.Run("windows beta v4 module installs @SHA", func(t *testing.T) {
+		assertRun(v4Result, winProfile, "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@972997650b51")
+	})
+
+	t.Run("windows stable derives cross-major v4 module", func(t *testing.T) {
+		assertRun(update.UpdateResult{Tool: tool, LatestVersion: "4.0.0"}, winProfile, "github.com/gentleman-programming/gentle-ai/v4/cmd/gentle-ai@v4.0.0")
+	})
 }
 
 func TestGoProxyBypassEnvPreservesExistingPatterns(t *testing.T) {
