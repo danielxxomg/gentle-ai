@@ -108,13 +108,13 @@ func TestWindowsBetaGentleAIUpgradeUsesShippedRegistryGoTarget(t *testing.T) {
 		return gotCmd
 	}
 
-	r := update.UpdateResult{Tool: tool, LatestVersion: "main@" + mainSHA, Status: update.UpdateAvailable}
+	r := update.UpdateResult{Tool: tool, LatestVersion: "main@" + mainSHA, GoModulePath: module, Status: update.UpdateAvailable}
 	profile := system.PlatformProfile{OS: "windows", PackageManager: "winget", GoAvailable: true, Supported: true}
 	if _, err := runStrategy(context.Background(), r, profile); err != nil {
 		t.Fatalf("runStrategy beta Windows self-upgrade: %v", err)
 	}
 
-	wantTarget := tool.GoImportPath + "@main"
+	wantTarget := module + "/cmd/gentle-ai@" + mainSHA
 	if gotName != "go" || len(gotArgs) != 2 || gotArgs[0] != "install" || gotArgs[1] != wantTarget {
 		t.Fatalf("go command = %q %v, want go install %s", gotName, gotArgs, wantTarget)
 	}

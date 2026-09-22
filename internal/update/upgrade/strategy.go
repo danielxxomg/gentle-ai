@@ -81,7 +81,7 @@ func runStrategy(ctx context.Context, r update.UpdateResult, profile system.Plat
 		}
 	}
 	if isBetaGentleAIUpgrade(r) && profile.OS != "windows" && ownership == update.HomebrewNone {
-		return false, goInstallMainUpgrade(r.Tool)
+		return false, goInstallMainUpgrade(r)
 	}
 
 	method := effectiveMethod(r.Tool, profile)
@@ -563,13 +563,23 @@ func goInstallUpgrade(ctx context.Context, r update.UpdateResult, profile system
 	// prepending a v to that display value.
 	target := fmt.Sprintf("%s@v%s", tool.GoImportPath, latestVersion)
 	betaGentleAI := isBetaGentleAIUpgrade(r)
+	module := r.GoModulePath
 	if betaGentleAI {
-		target = tool.GoImportPath + "@main"
+		sha := commitFromVersion(latestVersion)
+		if module == "" || sha == "" {
+			return fmt.Errorf("missing Go module path or commit SHA for %s/%s beta upgrade: %q", tool.Owner, tool.Repo, latestVersion)
+		}
+		target = fmt.Sprintf("%s/cmd/gentle-ai@%s", module, sha)
+	} else if tool.Name == "gentle-ai" {
+		if module == "" {
+			module = update.GentleAIModulePath(tool, latestVersion)
+		}
+		target = fmt.Sprintf("%s/cmd/gentle-ai@v%s", module, latestVersion)
 	}
 	cmd := execCommand("go", "install", target)
 	cmd.Stdin = nil
 	if betaGentleAI {
-		cmd.Env = goProxyBypassEnv(cmd.Env, gentleAIModulePath(tool))
+		cmd.Env = goProxyBypassEnv(cmd.Env, module)
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("go install %s: %w (output: %s)", target, err, string(out))
@@ -632,7 +642,11 @@ func gentleAIWindowsGoInstallProvenanceHint(r update.UpdateResult, destination, 
 	} else {
 		hint += "Confirm the active installation, then intentionally migrate with:\n  "
 	}
-	hint += update.GentleAISourceInstallCommand(r.LatestVersion)
+	cmd, _ := update.GentleAISourceInstallCommand(r.LatestVersion, r.GoModulePath)
+	if cmd == "" && r.UpdateHint != "" {
+		cmd = r.UpdateHint
+	}
+	hint += cmd
 	if destination != "" {
 		hint += fmt.Sprintf("\nAfter a successful migration, ensure only %s resolves for gentle-ai on PATH.", destination)
 	}
@@ -650,12 +664,15 @@ func isBetaGentleAIUpgrade(r update.UpdateResult) bool {
 // the same `go install` mechanism as goInstallUpgrade and therefore carries the
 // same risk of writing somewhere the shell does not resolve, so it performs the
 // same non-fatal destination verification.
-func goInstallMainUpgrade(tool update.ToolInfo) error {
-	module := gentleAIModulePath(tool)
+func goInstallMainUpgrade(r update.UpdateResult) error {
+	module, sha := strings.TrimSpace(r.GoModulePath), commitFromVersion(r.LatestVersion)
+	if module == "" || sha == "" {
+		return fmt.Errorf("missing Go module path or commit SHA for %s/%s beta upgrade: %q", r.Tool.Owner, r.Tool.Repo, r.LatestVersion)
+	}
 
 	destDir, destErr := goInstallDestinationDir()
 
-	target := module + "/cmd/gentle-ai@main"
+	target := fmt.Sprintf("%s/cmd/gentle-ai@%s", module, sha)
 	cmd := execCommand("go", "install", target)
 	cmd.Stdin = nil
 	cmd.Env = goProxyBypassEnv(cmd.Env, module)
@@ -663,20 +680,15 @@ func goInstallMainUpgrade(tool update.ToolInfo) error {
 		return fmt.Errorf("go install %s: %w (output: %s)", target, err, strings.TrimSpace(string(out)))
 	}
 
-	warnGoInstallDestination(tool.Name, detectOS(), destDir, destErr)
+	warnGoInstallDestination(r.Tool.Name, detectOS(), destDir, destErr)
 	return nil
 }
 
-func gentleAIModulePath(tool update.ToolInfo) string {
-	repository := strings.ToLower(fmt.Sprintf("github.com/%s/%s", strings.TrimSpace(tool.Owner), strings.TrimSpace(tool.Repo)))
-	if repository == "github.com//" {
-		repository = "github.com/gentleman-programming/gentle-ai"
+func commitFromVersion(version string) string {
+	if v := strings.TrimSpace(version); strings.HasPrefix(v, "main@") {
+		return strings.TrimSpace(strings.TrimPrefix(v, "main@"))
 	}
-	// Go derives the module path from the repository plus the major-version
-	// suffix: for major 2 and above the module path must end in /vN or the
-	// toolchain refuses every resolution of that repository, including the
-	// branch pseudo-versions this beta path installs.
-	return repository + "/v3"
+	return ""
 }
 
 func goProxyBypassEnv(base []string, module string) []string {
@@ -762,9 +774,13 @@ func binaryUpgrade(ctx context.Context, r update.UpdateResult, profile system.Pl
 }
 
 func gentleAIWindowsSourceInstallHint(r update.UpdateResult) string {
+	cmd, _ := update.GentleAISourceInstallCommand(r.LatestVersion, r.GoModulePath)
+	if cmd == "" && r.UpdateHint != "" {
+		cmd = r.UpdateHint
+	}
 	return update.WindowsDistributionHoldMessage + " " +
 		"No binary or remote script was downloaded or executed. Install/update from source with Go 1.25.10+:\n  " +
-		update.GentleAISourceInstallCommand(r.LatestVersion)
+		cmd
 }
 
 // engramBinaryUpgrade downloads or installs the latest engram binary.
