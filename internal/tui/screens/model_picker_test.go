@@ -781,3 +781,282 @@ func TestProviderEntriesSortedByNameWithModelCounts(t *testing.T) {
 		t.Fatalf("provider entries = %+v", got)
 	}
 }
+
+// ─── Provider search/filter (P1) ───────────────────────────────────────────
+
+// makeProviderSearchState builds a provider-select state whose ProviderEntries
+// display-name order is Anthropic, Microsoft, OpenAI. AvailableIDs order
+// intentionally differs so ordering guarantees are observable.
+func makeProviderSearchState() *ModelPickerState {
+	return &ModelPickerState{
+		Mode:         ModeProviderSelect,
+		AvailableIDs: []string{"msft", "anthropic", "openai"},
+		Providers: map[string]opencode.Provider{
+			"anthropic": {ID: "anthropic", Name: "Anthropic"},
+			"msft":      {ID: "msft", Name: "Microsoft"},
+			"openai":    {ID: "openai", Name: "OpenAI"},
+		},
+		SDDModels: map[string][]opencode.Model{
+			"anthropic": {{ID: "claude", Name: "Claude"}},
+			"msft":      {{ID: "phi", Name: "Phi"}},
+			"openai":    {{ID: "gpt", Name: "GPT"}},
+		},
+	}
+}
+
+func TestFilteredProviderEntries_MatchesNameAndIDCaseInsensitive(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{name: "empty query keeps ProviderEntries order", query: "", want: []string{"anthropic", "msft", "openai"}},
+		{name: "substring of display name", query: "soft", want: []string{"msft"}},
+		{name: "substring of provider id", query: "msft", want: []string{"msft"}},
+		{name: "case-insensitive name match", query: "MICRO", want: []string{"msft"}},
+		{name: "case-insensitive id match", query: "ANTHRO", want: []string{"anthropic"}},
+		{name: "multi-match retains name-sorted order", query: "a", want: []string{"anthropic", "openai"}},
+		{name: "query is trimmed", query: " soft ", want: []string{"msft"}},
+		{name: "no match yields zero rows", query: "zzz", want: nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			state := makeProviderSearchState()
+			state.ProviderSearch = tt.query
+			entries := FilteredProviderEntries(*state)
+			got := make([]string, 0, len(entries))
+			for _, entry := range entries {
+				got = append(got, entry.ID)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("FilteredProviderEntries(%q) = %v, want %v", tt.query, got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("FilteredProviderEntries(%q) = %v, want %v", tt.query, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestHandleProviderNav_PrintableRunesTypeIntoSearchIncludingJKQ(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		key         string
+		zeroCatalog bool
+	}{
+		{name: "j types instead of navigating", key: "j"},
+		{name: "k types instead of navigating", key: "k"},
+		{name: "q types instead of global quit", key: "q"},
+		{name: "other printable rune types", key: "x"},
+		{name: "non-ascii printable rune types", key: "ñ"},
+		{name: "q types with zero providers", key: "q", zeroCatalog: true},
+		{name: "j types with zero providers", key: "j", zeroCatalog: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			state := makeProviderSearchState()
+			if tt.zeroCatalog {
+				state = &ModelPickerState{Mode: ModeProviderSelect}
+			}
+			handled, _ := HandleModelPickerNav(tt.key, state, nil)
+			if !handled {
+				t.Fatalf("HandleModelPickerNav(%q) handled=false, printable runes must be search input and never reach global quit", tt.key)
+			}
+			if state.ProviderSearch != tt.key {
+				t.Fatalf("ProviderSearch = %q, want %q", state.ProviderSearch, tt.key)
+			}
+		})
+	}
+}
+
+func TestHandleProviderNav_NavigationUsesArrowsAndCtrlJKOnly(t *testing.T) {
+	state := makeProviderSearchState()
+	for _, tt := range []struct {
+		key  string
+		want int
+	}{
+		{key: "down", want: 1},
+		{key: "ctrl+j", want: 2},
+		{key: "up", want: 1},
+		{key: "ctrl+k", want: 0},
+	} {
+		handled, _ := HandleModelPickerNav(tt.key, state, nil)
+		if !handled || state.ProviderCursor != tt.want {
+			t.Fatalf("%q: handled=%v cursor=%d, want handled=true cursor=%d", tt.key, handled, state.ProviderCursor, tt.want)
+		}
+	}
+	if state.ProviderSearch != "" {
+		t.Fatalf("navigation keys must not edit the query; ProviderSearch=%q", state.ProviderSearch)
+	}
+
+	// j/k are typed input, never navigation, and query edits reset the cursor.
+	state.ProviderCursor = 1
+	handled, _ := HandleModelPickerNav("j", state, nil)
+	if !handled || state.ProviderSearch != "j" {
+		t.Fatalf("j: handled=%v query=%q, want typed into search", handled, state.ProviderSearch)
+	}
+	if state.ProviderCursor != 0 {
+		t.Fatalf("query edits must reset the cursor, ProviderCursor=%d", state.ProviderCursor)
+	}
+}
+
+func TestHandleProviderNav_QueryEditing(t *testing.T) {
+	t.Run("backspace deletes the last rune", func(t *testing.T) {
+		state := makeProviderSearchState()
+		state.ProviderSearch = "abñ"
+		handled, _ := HandleModelPickerNav("backspace", state, nil)
+		if !handled || state.ProviderSearch != "ab" {
+			t.Fatalf("backspace: handled=%v query=%q, want handled=true query=ab (rune delete, not byte)", handled, state.ProviderSearch)
+		}
+	})
+	t.Run("ctrl+u clears the query", func(t *testing.T) {
+		state := makeProviderSearchState()
+		state.ProviderSearch = "anth"
+		state.ProviderCursor, state.ProviderScroll = 1, 1
+		handled, _ := HandleModelPickerNav("ctrl+u", state, nil)
+		if !handled || state.ProviderSearch != "" {
+			t.Fatalf("ctrl+u: handled=%v query=%q, want cleared query", handled, state.ProviderSearch)
+		}
+	})
+	t.Run("query edits reset cursor and scroll", func(t *testing.T) {
+		for _, key := range []string{"x", "backspace", "ctrl+u"} {
+			state := makeProviderSearchState()
+			state.ProviderSearch = "a"
+			state.ProviderCursor, state.ProviderScroll = 2, 2
+			handled, _ := HandleModelPickerNav(key, state, nil)
+			if !handled || state.ProviderCursor != 0 || state.ProviderScroll != 0 {
+				t.Fatalf("%q edit: handled=%v cursor=%d scroll=%d, want reset to 0/0", key, handled, state.ProviderCursor, state.ProviderScroll)
+			}
+		}
+	})
+}
+
+func TestHandleProviderNav_EnterSelectsFilteredEntryAndClearsQuery(t *testing.T) {
+	state := makeProviderSearchState()
+	state.ProviderSearch = "a" // matches Anthropic and OpenAI, in that order
+	state.ProviderCursor = 1
+
+	handled, _ := HandleModelPickerNav("enter", state, nil)
+
+	if !handled {
+		t.Fatal("enter must be handled in ModeProviderSelect")
+	}
+	if state.SelectedProvider != "openai" || state.Mode != ModeModelSelect {
+		t.Fatalf("enter: selected=%q mode=%v, want openai/ModeModelSelect", state.SelectedProvider, state.Mode)
+	}
+	if state.ProviderSearch != "" {
+		t.Fatalf("successful enter must clear ProviderSearch, got %q", state.ProviderSearch)
+	}
+}
+
+func TestHandleProviderNav_EnterWithNoMatchesPreservesQueryAndStays(t *testing.T) {
+	state := makeProviderSearchState()
+	state.ProviderSearch = "zzz"
+
+	handled, _ := HandleModelPickerNav("enter", state, nil)
+
+	if !handled {
+		t.Fatal("zero-result enter must be handled and never reach global keys")
+	}
+	if state.Mode != ModeProviderSelect || state.ProviderSearch != "zzz" || state.SelectedProvider != "" {
+		t.Fatalf("zero-result enter: mode=%v query=%q selected=%q, want stay in provider select with query preserved",
+			state.Mode, state.ProviderSearch, state.SelectedProvider)
+	}
+}
+
+func TestHandleProviderNav_EscClearsQueryAndReturnsToPhaseList(t *testing.T) {
+	state := makeProviderSearchState()
+	state.ProviderSearch = "anth"
+
+	handled, _ := HandleModelPickerNav("esc", state, nil)
+
+	if !handled || state.Mode != ModePhaseList || state.ProviderSearch != "" {
+		t.Fatalf("esc: handled=%v mode=%v query=%q, want handled=true ModePhaseList empty query",
+			handled, state.Mode, state.ProviderSearch)
+	}
+}
+
+func TestHandleProviderNav_ClampsProviderCursorBeforeSelection(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		query        string
+		cursor       int
+		key          string
+		wantCursor   int
+		wantSelected string
+	}{
+		{name: "negative cursor clamps to first", cursor: -5, key: "enter", wantCursor: 0, wantSelected: "anthropic"},
+		{name: "oversized cursor clamps to last", cursor: 99, key: "enter", wantCursor: 2, wantSelected: "openai"},
+		{name: "empty filtered list clamps to zero and stays", query: "zzz", cursor: 7, key: "enter", wantCursor: 0, wantSelected: ""},
+		{name: "filter shrink clamps stale cursor", query: "soft", cursor: 2, key: "ctrl+j", wantCursor: 0, wantSelected: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			state := makeProviderSearchState()
+			state.ProviderSearch = tt.query
+			state.ProviderCursor = tt.cursor
+
+			handled, _ := HandleModelPickerNav(tt.key, state, nil)
+
+			if !handled {
+				t.Fatalf("key %q must be handled in ModeProviderSelect", tt.key)
+			}
+			if state.ProviderCursor != tt.wantCursor {
+				t.Fatalf("ProviderCursor = %d, want clamped to %d in mutable state", state.ProviderCursor, tt.wantCursor)
+			}
+			if state.SelectedProvider != tt.wantSelected {
+				t.Fatalf("SelectedProvider = %q, want %q", state.SelectedProvider, tt.wantSelected)
+			}
+			if tt.wantSelected == "" && state.Mode != ModeProviderSelect {
+				t.Fatalf("Mode = %v, want stay ModeProviderSelect when nothing is selected", state.Mode)
+			}
+		})
+	}
+}
+
+func TestRuntimeCatalogShrinkClampsProviderCursor(t *testing.T) {
+	state := *makeProviderSearchState()
+	state.ProviderCursor = 2
+
+	state = state.Update(RuntimeCatalogDiscoveryMsg{
+		Providers: map[string]opencode.Provider{
+			"openai": {ID: "openai", Name: "OpenAI", Models: map[string]opencode.Model{
+				"gpt": {ID: "gpt", Name: "GPT", ToolCall: true},
+			}},
+		},
+	})
+
+	if state.ProviderCursor != 0 {
+		t.Fatalf("ProviderCursor = %d after catalog shrink, want clamped to 0", state.ProviderCursor)
+	}
+}
+
+func TestRenderProviderSelect_UsesFilteredRowsWithSearchPrompt(t *testing.T) {
+	state := makeProviderSearchState()
+	state.ProviderSearch = "soft"
+
+	out := RenderModelPicker(nil, *state, 0)
+
+	if !strings.Contains(out, "Search: soft_") {
+		t.Fatalf("renderProviderSelect() missing search prompt; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Microsoft") {
+		t.Fatalf("renderProviderSelect() missing filtered provider row; got:\n%s", out)
+	}
+	if strings.Contains(out, "Anthropic") || strings.Contains(out, "OpenAI") {
+		t.Fatalf("renderProviderSelect() must render the filtered list only; got:\n%s", out)
+	}
+}
+
+func TestRenderProviderSelect_ShowsExplicitNoMatch(t *testing.T) {
+	state := makeProviderSearchState()
+	state.ProviderSearch = "zzz"
+
+	out := RenderModelPicker(nil, *state, 0)
+
+	if !strings.Contains(out, "No providers match your search.") {
+		t.Fatalf("renderProviderSelect() missing explicit no-match state; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Search: zzz_") {
+		t.Fatalf("search prompt must stay visible in the no-match state; got:\n%s", out)
+	}
+}

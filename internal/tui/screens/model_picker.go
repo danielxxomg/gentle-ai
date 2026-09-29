@@ -99,6 +99,7 @@ type ModelPickerState struct {
 
 	ProviderCursor int
 	ProviderScroll int
+	ProviderSearch string
 	ModelCursor    int
 	ModelScroll    int
 	ModelSearch    string
@@ -208,6 +209,7 @@ func (state *ModelPickerState) refreshRuntimeModels() {
 		state.SDDModels[id] = models
 	}
 	sort.Strings(state.AvailableIDs)
+	clampProviderCursor(state, FilteredProviderEntries(*state))
 }
 
 // SDDOrchestratorPhase is the persisted key for the OpenCode coordinator.
@@ -319,9 +321,28 @@ func ProviderEntries(state ModelPickerState) []ProviderEntry {
 	return entries
 }
 
-// HandleModelPickerNav handles j/k/enter/esc navigation within the sub-modes.
-// Returns true if the key was handled (so the caller should NOT do default nav).
-// When a model is selected, it applies the assignment to the given map and returns it.
+// FilteredProviderEntries returns ProviderEntries narrowed by ProviderSearch,
+// matching case-insensitive substrings against the display Name and the ID
+// while retaining ProviderEntries ordering.
+func FilteredProviderEntries(state ModelPickerState) []ProviderEntry {
+	entries := ProviderEntries(state)
+	query := strings.ToLower(strings.TrimSpace(state.ProviderSearch))
+	if query == "" {
+		return entries
+	}
+	filtered := make([]ProviderEntry, 0, len(entries))
+	for _, entry := range entries {
+		if strings.Contains(strings.ToLower(entry.Name), query) || strings.Contains(strings.ToLower(entry.ID), query) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+// HandleModelPickerNav handles navigation and search input within the
+// sub-modes. Returns true if the key was handled (so the caller should NOT do
+// default nav). When a model is selected, it applies the assignment to the
+// given map and returns it.
 func HandleModelPickerNav(
 	key string,
 	state *ModelPickerState,
@@ -344,14 +365,30 @@ func HandleModelPickerNav(
 	return false, assignments
 }
 
-func handleProviderNav(key string, state *ModelPickerState) bool {
-	entries := ProviderEntries(*state)
-	if len(entries) == 0 {
-		return false
+// clampProviderCursor keeps ProviderCursor inside the filtered provider list
+// bounds with min(max(0, cursor), max(0, len-1)), empty lists included (0), so
+// selection never acts on a stale cursor when the filter or the catalog shrinks.
+func clampProviderCursor(state *ModelPickerState, entries []ProviderEntry) {
+	state.ProviderCursor = min(max(0, state.ProviderCursor), max(0, len(entries)-1))
+	if state.ProviderScroll > state.ProviderCursor {
+		state.ProviderScroll = state.ProviderCursor
 	}
+	if state.ProviderScroll < 0 {
+		state.ProviderScroll = 0
+	}
+}
+
+// handleProviderNav handles the ModeProviderSelect key contract: up/down and
+// ctrl+j/ctrl+k move the filtered cursor, every printable rune (including
+// j/k/q) types into ProviderSearch, backspace deletes the last rune, ctrl+u
+// clears the query, enter selects (staying put with the query preserved on zero
+// matches), and esc returns to the phase list.
+func handleProviderNav(key string, state *ModelPickerState) bool {
+	entries := FilteredProviderEntries(*state)
+	clampProviderCursor(state, entries)
 
 	switch key {
-	case "up", "k":
+	case "up", "ctrl+k":
 		if state.ProviderCursor > 0 {
 			state.ProviderCursor--
 			if state.ProviderCursor < state.ProviderScroll {
@@ -359,7 +396,7 @@ func handleProviderNav(key string, state *ModelPickerState) bool {
 			}
 		}
 		return true
-	case "down", "j":
+	case "down", "ctrl+j":
 		if state.ProviderCursor < len(entries)-1 {
 			state.ProviderCursor++
 			if state.ProviderCursor >= state.ProviderScroll+maxVisibleItems {
@@ -368,19 +405,53 @@ func handleProviderNav(key string, state *ModelPickerState) bool {
 		}
 		return true
 	case "enter":
+		if len(entries) == 0 {
+			// Zero matches: keep the query and stay in provider select.
+			return true
+		}
 		state.SelectedProvider = entries[state.ProviderCursor].ID
 		state.Mode = ModeModelSelect
+		state.ProviderSearch = ""
 		state.ModelCursor = 0
 		state.ModelScroll = 0
 		state.ModelSearch = ""
 		return true
 	case "esc":
 		state.Mode = ModePhaseList
+		state.ProviderSearch = ""
 		state.ProviderCursor = 0
 		state.ProviderScroll = 0
 		return true
+	case "backspace":
+		if state.ProviderSearch != "" {
+			runes := []rune(state.ProviderSearch)
+			state.ProviderSearch = string(runes[:len(runes)-1])
+			state.ProviderCursor = 0
+			state.ProviderScroll = 0
+		}
+		return true
+	case "ctrl+u":
+		state.ProviderSearch = ""
+		state.ProviderCursor = 0
+		state.ProviderScroll = 0
+		return true
+	default:
+		if isProviderSearchInput(key) {
+			state.ProviderSearch += key
+			state.ProviderCursor = 0
+			state.ProviderScroll = 0
+			return true
+		}
 	}
 	return false
+}
+
+// isProviderSearchInput reports whether key is a printable rune that belongs in
+// the provider search query. j/k/q are typed input in ModeProviderSelect
+// (navigation is up/down/ctrl+j/ctrl+k), so no printable rune is excluded.
+func isProviderSearchInput(key string) bool {
+	runes := []rune(key)
+	return len(runes) == 1 && unicode.IsPrint(runes[0])
 }
 
 func handleModelNav(
@@ -868,11 +939,21 @@ func renderProviderSelect(state ModelPickerState) string {
 	b.WriteString(styles.TitleStyle.Render("Select provider:"))
 	b.WriteString("\n\n")
 
-	entries := ProviderEntries(state)
+	b.WriteString(styles.SubtextStyle.Render("Search: " + modelSearchDisplay(state.ProviderSearch)))
+	b.WriteString("\n\n")
+
+	entries := FilteredProviderEntries(state)
 
 	end := state.ProviderScroll + maxVisibleItems
 	if end > len(entries) {
 		end = len(entries)
+	}
+
+	if len(entries) == 0 {
+		b.WriteString(styles.WarningStyle.Render("  No providers match your search."))
+		b.WriteString("\n\n")
+		b.WriteString(styles.HelpStyle.Render("type: search • backspace: delete • ctrl+u: clear • esc: back"))
+		return b.String()
 	}
 
 	if state.ProviderScroll > 0 {
@@ -898,7 +979,7 @@ func renderProviderSelect(state ModelPickerState) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(styles.HelpStyle.Render("j/k: navigate • enter: select • esc: back"))
+	b.WriteString(styles.HelpStyle.Render("up/down/ctrl+j/ctrl+k: navigate • type: search • backspace: delete • ctrl+u: clear • enter: select • esc: back"))
 
 	return b.String()
 }
